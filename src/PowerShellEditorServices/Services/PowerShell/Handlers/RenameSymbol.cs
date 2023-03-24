@@ -36,39 +36,13 @@ namespace Microsoft.PowerShell.EditorServices.Handlers
 
         public async Task<RenameSymbolResult> Handle(RenameSymbolParams request, CancellationToken cancellationToken)
         {
-            const string script = @"
-function __Expand-Alias {
-
-    param($targetScript)
-
-    [ref]$errors=$null
-
-    $tokens = [System.Management.Automation.PsParser]::Tokenize($targetScript, $errors).Where({$_.type -eq 'command'}) |
-                    Sort-Object Start -Descending
-
-    foreach ($token in  $tokens) {
-        $definition=(Get-Command ('`'+$token.Content) -CommandType Alias -ErrorAction SilentlyContinue).Definition
-
-        if($definition) {
-            $lhs=$targetScript.Substring(0, $token.Start)
-            $rhs=$targetScript.Substring($token.Start + $token.Length)
-
-            $targetScript=$lhs + $definition + $rhs
-       }
-    }
-
-    $targetScript
-}";
 
             // TODO: Refactor to not rerun the function definition every time.
             PSCommand psCommand = new();
             psCommand
-                .AddScript(script)
-                .AddStatement()
-                .AddCommand("__Expand-Alias")
-                .AddArgument(request.Text);
+                .AddScript("Return 'hello world'")
+                .AddStatement();
             System.Collections.Generic.IReadOnlyList<string> result = await _executionService.ExecutePSCommandAsync<string>(psCommand, cancellationToken).ConfigureAwait(false);
-
             return new RenameSymbolResult
             {
                 Text = result[0]
