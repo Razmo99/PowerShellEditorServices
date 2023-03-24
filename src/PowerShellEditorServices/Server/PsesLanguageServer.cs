@@ -120,6 +120,7 @@ namespace Microsoft.PowerShell.EditorServices.Server
                     .WithHandler<GetCommandHandler>()
                     .WithHandler<ShowHelpHandler>()
                     .WithHandler<ExpandAliasHandler>()
+                    .WithHandler<RenameSymbolHandler>()
                     .WithHandler<PsesSemanticTokensHandler>()
                     .WithHandler<DidChangeWatchedFilesHandler>()
                     // NOTE: The OnInitialize delegate gets run when we first receive the
