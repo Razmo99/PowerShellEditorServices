@@ -23,8 +23,6 @@ namespace Microsoft.PowerShell.EditorServices.Handlers
         public string FileName { get; set; }
         public int Line { get; set; }
         public int Column { get; set; }
-        public bool WantsTextChanges { get; set; }
-        public bool ApplyTextChanges { get; set; } = true;
         public string RenameTo { get; set; }
     }
     internal class TextChange
