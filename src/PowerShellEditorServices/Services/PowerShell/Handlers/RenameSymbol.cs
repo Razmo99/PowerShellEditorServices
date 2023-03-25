@@ -94,7 +94,6 @@ namespace Microsoft.PowerShell.EditorServices.Handlers
 
             SymbolReference symbol = scriptFile.References.TryGetSymbolAtPosition(request.Line + 1, request.Column + 1);
             Ast ast = scriptFile.ScriptAst;
-            IEnumerable<Ast> ParentFunctions = GetParentFunction(symbol, ast);
 
             RenameSymbolResult response = new()
             {
@@ -108,10 +107,9 @@ namespace Microsoft.PowerShell.EditorServices.Handlers
             }
             };
 
-            foreach (Ast e in ParentFunctions)
+            foreach (Ast e in GetParentFunction(symbol, ast))
             {
-                IEnumerable<Ast> VarOccurences = GetVariablesWithinExtent(e, ast);
-                foreach (Ast v in VarOccurences)
+                foreach (Ast v in GetVariablesWithinExtent(e, ast))
                 {
                     TextChange change = new()
                     {
@@ -124,9 +122,7 @@ namespace Microsoft.PowerShell.EditorServices.Handlers
                     response.Changes[0].Changes.Add(change);
                 }
             }
-            //response.Changes[0]
 
-            _logger.LogDebug("Testing");
             PSCommand psCommand = new();
             psCommand
                 .AddScript("Return 'Not sure how to make this non Async :('")
