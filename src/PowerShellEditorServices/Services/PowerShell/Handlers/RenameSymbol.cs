@@ -6,8 +6,8 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
+using System.Management.Automation.Language;
 using OmniSharp.Extensions.JsonRpc;
-using Microsoft.PowerShell.EditorServices.Services.Symbols;
 using Microsoft.PowerShell.EditorServices.Services.PowerShell;
 using Microsoft.PowerShell.EditorServices.Services;
 using Microsoft.Extensions.Logging;
@@ -26,10 +26,23 @@ namespace Microsoft.PowerShell.EditorServices.Handlers
         public bool ApplyTextChanges { get; set; } = true;
         public string RenameTo { get; set; }
     }
+    internal class TextChange
+    {
+        public string NewText { get; set; }
+        public int StartLine { get; set; }
+        public int StartColumn { get; set; }
+        public int EndLine { get; set; }
+        public int EndColumn { get; set; }
+    }
+    internal class ModifiedFileResponse
+    {
+        public string FileName { get; set; }
+        public List<TextChange> Changes { get; set; }
 
+    }
     internal class RenameSymbolResult
     {
-        public string Text { get; set; }
+        public List<ModifiedFileResponse> Changes { get; set; }
     }
 
     internal class RenameSymbolHandler : IRenameSymbolHandler
@@ -41,11 +54,12 @@ namespace Microsoft.PowerShell.EditorServices.Handlers
 
         public RenameSymbolHandler(IInternalPowerShellExecutionService executionService,
         ILoggerFactory loggerFactory,
-            WorkspaceService workspaceService) {
+            WorkspaceService workspaceService)
+        {
             _logger = loggerFactory.CreateLogger<RenameSymbolHandler>();
             _workspaceService = workspaceService;
             _executionService = executionService;
-            }
+        }
 
         public async Task<RenameSymbolResult> Handle(RenameSymbolParams request, CancellationToken cancellationToken)
         {
@@ -54,11 +68,55 @@ namespace Microsoft.PowerShell.EditorServices.Handlers
                 _logger.LogDebug("Failed to open file!");
                 return null;
             }
-            //scriptFile.ScriptAst.FindAll()
-            IEnumerable<SymbolReference> occurrences = SymbolsService.FindOccurrencesInFile(
-                scriptFile,
-                request.Line+1,
-                request.Column+1);
+            // Locate the Symbol in the file
+            // Look at its parent to find its script scope
+            //  I.E In a function
+            // Lookup all other occurances of the symbol
+            // replace symbols that fall in the same scope as the initial symbol
+            Services.Symbols.SymbolReference symbol = scriptFile.References.TryGetSymbolAtPosition(request.Line + 1, request.Column + 1);
+            Ast ast = scriptFile.ScriptAst;
+            IEnumerable<Ast> ParentFunctions = ast.FindAll(ast =>
+            {
+                return ast.Extent.StartLineNumber <= symbol.ScriptRegion.StartLineNumber &&
+                    ast.Extent.EndLineNumber >= symbol.ScriptRegion.EndLineNumber &&
+                    ast is FunctionDefinitionAst;
+            }, true);
+
+            RenameSymbolResult response = new()
+            {
+                Changes = new List<ModifiedFileResponse>
+            {
+                new ModifiedFileResponse()
+                {
+                    FileName = request.FileName,
+                    Changes = new List<TextChange>()
+                }
+            }
+            };
+
+            foreach (Ast e in ParentFunctions)
+            {
+                IEnumerable<Ast> VarOccurences = ast.FindAll(ast =>
+                {
+                    return ast.Extent.StartLineNumber >= e.Extent.StartLineNumber &&
+                    ast.Extent.EndLineNumber <= e.Extent.EndLineNumber &&
+                    ast is VariableExpressionAst;
+                }, true);
+                foreach (Ast v in VarOccurences)
+                {
+                    TextChange change = new()
+                    {
+                        StartColumn = v.Extent.StartColumnNumber-1,
+                        StartLine = v.Extent.StartLineNumber-1,
+                        EndColumn = v.Extent.EndColumnNumber-1,
+                        EndLine = v.Extent.EndLineNumber-1,
+                        NewText = request.RenameTo
+                    };
+                    response.Changes[0].Changes.Add(change);
+                }
+            }
+            //response.Changes[0]
+
             _logger.LogDebug("Testing");
             // TODO: Refactor to not rerun the function definition every time.
             PSCommand psCommand = new();
@@ -66,10 +124,7 @@ namespace Microsoft.PowerShell.EditorServices.Handlers
                 .AddScript("Return 'hello world'")
                 .AddStatement();
             IReadOnlyList<string> result = await _executionService.ExecutePSCommandAsync<string>(psCommand, cancellationToken).ConfigureAwait(false);
-            return new RenameSymbolResult
-            {
-                Text = "YOYOYO"
-            };
+            return response;
         }
     }
 }
