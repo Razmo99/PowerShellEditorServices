@@ -61,7 +61,8 @@ namespace Microsoft.PowerShell.EditorServices.Handlers
         }
 
         /// Method to get a symbols parent function(s) if any
-        internal static IEnumerable<Ast> GetParentFunction(SymbolReference symbol,Ast Ast){
+        internal static IEnumerable<Ast> GetParentFunction(SymbolReference symbol, Ast Ast)
+        {
             return Ast.FindAll(ast =>
             {
                 return ast.Extent.StartLineNumber <= symbol.ScriptRegion.StartLineNumber &&
@@ -69,7 +70,8 @@ namespace Microsoft.PowerShell.EditorServices.Handlers
                     ast is FunctionDefinitionAst;
             }, true);
         }
-                internal static IEnumerable<Ast> GetVariablesWithinExtent(Ast symbol,Ast Ast){
+        internal static IEnumerable<Ast> GetVariablesWithinExtent(Ast symbol, Ast Ast)
+        {
             return Ast.FindAll(ast =>
                 {
                     return ast.Extent.StartLineNumber >= symbol.Extent.StartLineNumber &&
@@ -92,7 +94,7 @@ namespace Microsoft.PowerShell.EditorServices.Handlers
 
             SymbolReference symbol = scriptFile.References.TryGetSymbolAtPosition(request.Line + 1, request.Column + 1);
             Ast ast = scriptFile.ScriptAst;
-            IEnumerable<Ast> ParentFunctions = GetParentFunction(symbol,ast);
+            IEnumerable<Ast> ParentFunctions = GetParentFunction(symbol, ast);
 
             RenameSymbolResult response = new()
             {
@@ -108,15 +110,15 @@ namespace Microsoft.PowerShell.EditorServices.Handlers
 
             foreach (Ast e in ParentFunctions)
             {
-                IEnumerable<Ast> VarOccurences = GetVariablesWithinExtent(e,ast);
+                IEnumerable<Ast> VarOccurences = GetVariablesWithinExtent(e, ast);
                 foreach (Ast v in VarOccurences)
                 {
                     TextChange change = new()
                     {
-                        StartColumn = v.Extent.StartColumnNumber-1,
-                        StartLine = v.Extent.StartLineNumber-1,
-                        EndColumn = v.Extent.EndColumnNumber-1,
-                        EndLine = v.Extent.EndLineNumber-1,
+                        StartColumn = v.Extent.StartColumnNumber - 1,
+                        StartLine = v.Extent.StartLineNumber - 1,
+                        EndColumn = v.Extent.EndColumnNumber - 1,
+                        EndLine = v.Extent.EndLineNumber - 1,
                         NewText = request.RenameTo
                     };
                     response.Changes[0].Changes.Add(change);
@@ -125,10 +127,9 @@ namespace Microsoft.PowerShell.EditorServices.Handlers
             //response.Changes[0]
 
             _logger.LogDebug("Testing");
-            // TODO: Refactor to not rerun the function definition every time.
             PSCommand psCommand = new();
             psCommand
-                .AddScript("Return 'hello world'")
+                .AddScript("Return 'Not sure how to make this non Async :('")
                 .AddStatement();
             IReadOnlyList<string> result = await _executionService.ExecutePSCommandAsync<string>(psCommand, cancellationToken).ConfigureAwait(false);
             return response;
