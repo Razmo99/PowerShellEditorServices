@@ -9,6 +9,7 @@ using MediatR;
 using System.Management.Automation.Language;
 using OmniSharp.Extensions.JsonRpc;
 using Microsoft.PowerShell.EditorServices.Services.PowerShell;
+using Microsoft.PowerShell.EditorServices.Services.Symbols;
 using Microsoft.PowerShell.EditorServices.Services;
 using Microsoft.Extensions.Logging;
 using Microsoft.PowerShell.EditorServices.Services.TextDocument;
@@ -61,6 +62,23 @@ namespace Microsoft.PowerShell.EditorServices.Handlers
             _executionService = executionService;
         }
 
+        /// Method to get a symbols parent function(s) if any
+        internal static IEnumerable<Ast> GetParentFunction(SymbolReference symbol,Ast Ast){
+            return Ast.FindAll(ast =>
+            {
+                return ast.Extent.StartLineNumber <= symbol.ScriptRegion.StartLineNumber &&
+                    ast.Extent.EndLineNumber >= symbol.ScriptRegion.EndLineNumber &&
+                    ast is FunctionDefinitionAst;
+            }, true);
+        }
+                internal static IEnumerable<Ast> GetVariablesWithinExtent(Ast symbol,Ast Ast){
+            return Ast.FindAll(ast =>
+                {
+                    return ast.Extent.StartLineNumber >= symbol.Extent.StartLineNumber &&
+                    ast.Extent.EndLineNumber <= symbol.Extent.EndLineNumber &&
+                    ast is VariableExpressionAst;
+                }, true);
+        }
         public async Task<RenameSymbolResult> Handle(RenameSymbolParams request, CancellationToken cancellationToken)
         {
             if (!_workspaceService.TryGetFile(request.FileName, out ScriptFile scriptFile))
@@ -73,14 +91,10 @@ namespace Microsoft.PowerShell.EditorServices.Handlers
             //  I.E In a function
             // Lookup all other occurances of the symbol
             // replace symbols that fall in the same scope as the initial symbol
-            Services.Symbols.SymbolReference symbol = scriptFile.References.TryGetSymbolAtPosition(request.Line + 1, request.Column + 1);
+
+            SymbolReference symbol = scriptFile.References.TryGetSymbolAtPosition(request.Line + 1, request.Column + 1);
             Ast ast = scriptFile.ScriptAst;
-            IEnumerable<Ast> ParentFunctions = ast.FindAll(ast =>
-            {
-                return ast.Extent.StartLineNumber <= symbol.ScriptRegion.StartLineNumber &&
-                    ast.Extent.EndLineNumber >= symbol.ScriptRegion.EndLineNumber &&
-                    ast is FunctionDefinitionAst;
-            }, true);
+            IEnumerable<Ast> ParentFunctions = GetParentFunction(symbol,ast);
 
             RenameSymbolResult response = new()
             {
@@ -96,12 +110,7 @@ namespace Microsoft.PowerShell.EditorServices.Handlers
 
             foreach (Ast e in ParentFunctions)
             {
-                IEnumerable<Ast> VarOccurences = ast.FindAll(ast =>
-                {
-                    return ast.Extent.StartLineNumber >= e.Extent.StartLineNumber &&
-                    ast.Extent.EndLineNumber <= e.Extent.EndLineNumber &&
-                    ast is VariableExpressionAst;
-                }, true);
+                IEnumerable<Ast> VarOccurences = GetVariablesWithinExtent(e,ast);
                 foreach (Ast v in VarOccurences)
                 {
                     TextChange change = new()
