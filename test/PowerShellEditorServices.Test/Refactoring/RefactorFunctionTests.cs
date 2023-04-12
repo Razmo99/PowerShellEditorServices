@@ -98,34 +98,6 @@ namespace PowerShellEditorServices.Test.Refactoring
             });
         }
         [Fact]
-        public void RefactorNestedFunction()
-        {
-            RenameSymbolParams request = RefactorsFunctionData.FunctionsMultiple;
-            ScriptFile scriptFile = GetTestScript(request.FileName);
-            SymbolReference symbol = scriptFile.References.TryGetSymbolAtPosition(
-                    request.Line + 1,
-                    request.Column + 1);
-            ModifiedFileResponse changes = RenameSymbolHandler.RefactorFunction(symbol, scriptFile.ScriptAst, request);
-            Assert.Equal(2, changes.Changes.Count);
-
-            Assert.Contains(changes.Changes, item =>
-            {
-                return item.StartColumn == 13 &&
-                        item.EndColumn == 16 &&
-                        item.StartLine == 4 &&
-                        item.EndLine == 4 &&
-                        request.RenameTo == item.NewText;
-            });
-            Assert.Contains(changes.Changes, item =>
-            {
-                return item.StartColumn == 4 &&
-                        item.EndColumn == 10 &&
-                        item.StartLine == 6 &&
-                        item.EndLine == 6 &&
-                        request.RenameTo == item.NewText;
-            });
-        }
-        [Fact]
         public void RefactorFlatFunction()
         {
             RenameSymbolParams request = RefactorsFunctionData.FunctionsSimpleFlat;
@@ -150,6 +122,62 @@ namespace PowerShellEditorServices.Test.Refactoring
                         item.EndColumn == 84 &&
                         item.StartLine == 0 &&
                         item.EndLine == 0 &&
+                        request.RenameTo == item.NewText;
+            });
+        }
+        [Fact]
+        public void RefactorNestedDuplicateInnerFunction()
+        {
+            RenameSymbolParams request = RefactorsFunctionData.FunctionsNestedDuplicateInner;
+            ScriptFile scriptFile = GetTestScript(request.FileName);
+            SymbolReference symbol = scriptFile.References.TryGetSymbolAtPosition(
+                    request.Line + 1,
+                    request.Column + 1);
+            ModifiedFileResponse changes = RenameSymbolHandler.RefactorFunction(symbol, scriptFile.ScriptAst, request);
+            Assert.Equal(2, changes.Changes.Count);
+
+            Assert.Contains(changes.Changes, item =>
+            {
+                return item.StartColumn == 13 &&
+                        item.EndColumn == 18 &&
+                        item.StartLine == 3 &&
+                        item.EndLine == 3 &&
+                        request.RenameTo == item.NewText;
+            });
+            Assert.Contains(changes.Changes, item =>
+            {
+                return item.StartColumn == 4 &&
+                        item.EndColumn == 9 &&
+                        item.StartLine == 6 &&
+                        item.EndLine == 6 &&
+                        request.RenameTo == item.NewText;
+            });
+        }
+        [Fact]
+        public void RefactorNestedDuplicateOuterFunction()
+        {
+            RenameSymbolParams request = RefactorsFunctionData.FunctionsNestedDuplicateOuter;
+            ScriptFile scriptFile = GetTestScript(request.FileName);
+            SymbolReference symbol = scriptFile.References.TryGetSymbolAtPosition(
+                    request.Line + 1,
+                    request.Column + 1);
+            ModifiedFileResponse changes = RenameSymbolHandler.RefactorFunction(symbol, scriptFile.ScriptAst, request);
+            Assert.Equal(2, changes.Changes.Count);
+
+            Assert.Contains(changes.Changes, item =>
+            {
+                return item.StartColumn == 9 &&
+                        item.EndColumn == 14 &&
+                        item.StartLine == 10 &&
+                        item.EndLine == 10 &&
+                        request.RenameTo == item.NewText;
+            });
+            Assert.Contains(changes.Changes, item =>
+            {
+                return item.StartColumn == 0 &&
+                        item.EndColumn == 5 &&
+                        item.StartLine == 14 &&
+                        item.EndLine == 14 &&
                         request.RenameTo == item.NewText;
             });
         }

@@ -45,5 +45,19 @@ namespace PowerShellEditorServices.Test.Shared.Refactoring
             Line = 0,
             RenameTo = "ChangedFlat"
         };
+        public static readonly RenameSymbolParams FunctionsNestedDuplicateInner = new()
+        {
+            FileName = "FunctionsNestedDuplicate.ps1",
+            Column = 14,
+            Line = 3,
+            RenameTo = "ChangedFlat"
+        };
+        public static readonly RenameSymbolParams FunctionsNestedDuplicateOuter = new()
+        {
+            FileName = "FunctionsNestedDuplicate.ps1",
+            Column = 9,
+            Line = 10,
+            RenameTo = "ChangedFlat"
+        };
     }
 }
