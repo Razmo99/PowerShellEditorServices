@@ -203,7 +203,7 @@ namespace PowerShellEditorServices.Test.Debugging
         [MemberData(nameof(DebuggerAcceptsScriptArgsTestData))]
         public async Task DebuggerAcceptsScriptArgs(string[] args)
         {
-            BreakpointDetails[] breakpoints = await debugService.SetLineBreakpointsAsync(
+            IReadOnlyList<BreakpointDetails> breakpoints = await debugService.SetLineBreakpointsAsync(
                 oddPathScriptFile,
                 new[] { BreakpointDetails.Create(oddPathScriptFile.FilePath, 3) }).ConfigureAwait(true);
 
@@ -257,13 +257,13 @@ namespace PowerShellEditorServices.Test.Debugging
         [Fact]
         public async Task DebuggerSetsAndClearsFunctionBreakpoints()
         {
-            CommandBreakpointDetails[] breakpoints = await debugService.SetCommandBreakpointsAsync(
+            IReadOnlyList<CommandBreakpointDetails> breakpoints = await debugService.SetCommandBreakpointsAsync(
                 new[] {
                     CommandBreakpointDetails.Create("Write-Host"),
                     CommandBreakpointDetails.Create("Get-Date")
                 }).ConfigureAwait(true);
 
-            Assert.Equal(2, breakpoints.Length);
+            Assert.Equal(2, breakpoints.Count);
             Assert.Equal("Write-Host", breakpoints[0].Name);
             Assert.Equal("Get-Date", breakpoints[1].Name);
 
@@ -281,7 +281,7 @@ namespace PowerShellEditorServices.Test.Debugging
         [Fact]
         public async Task DebuggerStopsOnFunctionBreakpoints()
         {
-            CommandBreakpointDetails[] breakpoints = await debugService.SetCommandBreakpointsAsync(
+            IReadOnlyList<CommandBreakpointDetails> breakpoints = await debugService.SetCommandBreakpointsAsync(
                 new[] { CommandBreakpointDetails.Create("Write-Host") }).ConfigureAwait(true);
 
             Task _ = ExecuteDebugFileAsync();
@@ -311,7 +311,7 @@ namespace PowerShellEditorServices.Test.Debugging
         [Fact]
         public async Task DebuggerSetsAndClearsLineBreakpoints()
         {
-            BreakpointDetails[] breakpoints =
+            IReadOnlyList<BreakpointDetails> breakpoints =
                 await debugService.SetLineBreakpointsAsync(
                     debugScriptFile,
                     new[] {
@@ -442,7 +442,7 @@ namespace PowerShellEditorServices.Test.Debugging
         [Fact]
         public async Task DebuggerProvidesMessageForInvalidConditionalBreakpoint()
         {
-            BreakpointDetails[] breakpoints =
+            IReadOnlyList<BreakpointDetails> breakpoints =
                 await debugService.SetLineBreakpointsAsync(
                     debugScriptFile,
                     new[] {
@@ -470,7 +470,7 @@ namespace PowerShellEditorServices.Test.Debugging
         [Fact]
         public async Task DebuggerFindsParsableButInvalidSimpleBreakpointConditions()
         {
-            BreakpointDetails[] breakpoints =
+            IReadOnlyList<BreakpointDetails> breakpoints =
                 await debugService.SetLineBreakpointsAsync(
                     debugScriptFile,
                     new[] {
@@ -478,7 +478,7 @@ namespace PowerShellEditorServices.Test.Debugging
                         BreakpointDetails.Create(debugScriptFile.FilePath, 7, column: null, condition: "$i > 100")
                     }).ConfigureAwait(true);
 
-            Assert.Equal(2, breakpoints.Length);
+            Assert.Equal(2, breakpoints.Count);
             Assert.Equal(5, breakpoints[0].LineNumber);
             Assert.False(breakpoints[0].Verified);
             Assert.Contains("Use '-eq' instead of '=='", breakpoints[0].Message);
@@ -493,7 +493,7 @@ namespace PowerShellEditorServices.Test.Debugging
         public async Task DebuggerBreaksWhenRequested()
         {
             IReadOnlyList<LineBreakpoint> confirmedBreakpoints = await GetConfirmedBreakpoints(debugScriptFile).ConfigureAwait(true);
-            Assert.Equal(0, confirmedBreakpoints.Count);
+            Assert.Empty(confirmedBreakpoints);
             Task _ = ExecuteDebugFileAsync();
             // NOTE: This must be run on a separate thread so the async event handlers can fire.
             await Task.Run(debugService.Break).ConfigureAwait(true);
@@ -1140,7 +1140,7 @@ namespace PowerShellEditorServices.Test.Debugging
             VariableDetailsBase var = Array.Find(variables, v => v.Name == "$file");
             VariableDetailsBase[] childVars = await debugService.GetVariables(var.Id, CancellationToken.None).ConfigureAwait(true);
             Assert.Contains(childVars, i => i.Name is "PSPath");
-            Assert.Contains(childVars, i => i.Name is "PSProvider" && i.ValueString is "Microsoft.PowerShell.Core\\FileSystem");
+            Assert.Contains(childVars, i => i.Name is "PSProvider" && i.ValueString is @"Microsoft.PowerShell.Core\FileSystem");
             Assert.Contains(childVars, i => i.Name is "Exists" && i.ValueString is "$true");
             Assert.Contains(childVars, i => i.Name is "LastAccessTime");
         }
