@@ -35,7 +35,32 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
     {
         internal const string DefaultPrompt = "> ";
 
+        private static readonly PSCommand s_promptCommand = new PSCommand().AddCommand("prompt");
+
         private static readonly PropertyInfo s_scriptDebuggerTriggerObjectProperty;
+
+        /// <summary>
+        /// To workaround a horrid bug where the `TranscribeOnly` field of the PSHostUserInterface
+        /// can accidentally remain true, we have to use a bunch of reflection so that <see
+        /// cref="DisableTranscribeOnly()" /> can reset it to false. (This was fixed in PowerShell
+        /// 7.) Note that it must be the internal UI instance, not our own UI instance, otherwise
+        /// this would be easier. Because of the amount of reflection involved, we contain it to
+        /// only PowerShell 5.1 at compile-time, and we have to set this up in this class, not <see
+        /// cref="SynchronousPowerShellTask" /> because that's templated, making statics practically
+        /// useless. <see cref = "SynchronousPowerShellTask.ExecuteNormally" /> method calls <see
+        /// cref="DisableTranscribeOnly()" /> when necessary.
+        /// See: https://github.com/PowerShell/PowerShell/pull/3436
+        /// </summary>
+        [ThreadStatic] // Because we can re-use it, but only once per instance of PSES.
+        private static PSHostUserInterface s_internalPSHostUserInterface;
+
+        private static readonly Func<PSHostUserInterface, bool> s_getTranscribeOnlyDelegate;
+
+        private static readonly Action<PSHostUserInterface, bool> s_setTranscribeOnlyDelegate;
+
+        private static readonly PropertyInfo s_executionContextProperty;
+
+        private static readonly PropertyInfo s_internalHostProperty;
 
         private readonly ILoggerFactory _loggerFactory;
 
@@ -102,6 +127,31 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
             s_scriptDebuggerTriggerObjectProperty = scriptDebuggerType.GetProperty(
                 "TriggerObject",
                 BindingFlags.Instance | BindingFlags.NonPublic);
+
+            if (VersionUtils.IsNetCore)
+            {
+                // The following reflection methods are only needed for the .NET Framework.
+                return;
+            }
+
+            PropertyInfo transcribeOnlyProperty = typeof(PSHostUserInterface)
+                .GetProperty("TranscribeOnly", BindingFlags.NonPublic | BindingFlags.Instance);
+
+            MethodInfo transcribeOnlyGetMethod = transcribeOnlyProperty.GetGetMethod(nonPublic: true);
+
+            s_getTranscribeOnlyDelegate = (Func<PSHostUserInterface, bool>)Delegate.CreateDelegate(
+                typeof(Func<PSHostUserInterface, bool>), transcribeOnlyGetMethod);
+
+            MethodInfo transcribeOnlySetMethod = transcribeOnlyProperty.GetSetMethod(nonPublic: true);
+
+            s_setTranscribeOnlyDelegate = (Action<PSHostUserInterface, bool>)Delegate.CreateDelegate(
+                typeof(Action<PSHostUserInterface, bool>), transcribeOnlySetMethod);
+
+            s_executionContextProperty = typeof(Runspace)
+                .GetProperty("ExecutionContext", BindingFlags.NonPublic | BindingFlags.Instance);
+
+            s_internalHostProperty = s_executionContextProperty.PropertyType
+                .GetProperty("InternalHost", BindingFlags.NonPublic | BindingFlags.Instance);
         }
 
         public PsesInternalHost(
@@ -493,6 +543,34 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
 
         internal void AddToHistory(string historyEntry) => _readLineProvider.ReadLine.AddToHistory(historyEntry);
 
+        // This works around a bug in PowerShell 5.1 (that was later fixed) where a running
+        // transcription could cause output to disappear since the `TranscribeOnly` property was
+        // accidentally not reset to false.
+        internal void DisableTranscribeOnly()
+        {
+            if (VersionUtils.IsNetCore)
+            {
+                return;
+            }
+
+            // To fix the TranscribeOnly bug, we have to get the internal UI, which involves a lot
+            // of reflection since we can't always just use PowerShell to execute `$Host.UI`.
+            s_internalPSHostUserInterface ??=
+                (s_internalHostProperty.GetValue(
+                    s_executionContextProperty.GetValue(CurrentPowerShell.Runspace))
+                    as PSHost)?.UI;
+
+            if (s_internalPSHostUserInterface is null)
+            {
+                return;
+            }
+
+            if (s_getTranscribeOnlyDelegate(s_internalPSHostUserInterface))
+            {
+                s_setTranscribeOnlyDelegate(s_internalPSHostUserInterface, false);
+            }
+        }
+
         internal Task LoadHostProfilesAsync(CancellationToken cancellationToken)
         {
             // NOTE: This is a special task run on startup!
@@ -585,7 +663,11 @@ function Global:Prompt() {
 }
 
 # Set IsWindows property
-Write-Host -NoNewLine ""$([char]0x1b)]633;P;IsWindows=$($IsWindows)`a""
+if ($PSVersionTable.PSVersion -lt ""6.0"") {
+	[Console]::Write(""$([char]0x1b)]633;P;IsWindows=$true`a"")
+} else {
+	[Console]::Write(""$([char]0x1b)]633;P;IsWindows=$IsWindows`a"")
+}
 
 # Set always on key handlers which map to default VS Code keybindings
 function Set-MappedKeyHandler {
@@ -1026,10 +1108,8 @@ Set-MappedKeyHandlers
             string prompt = DefaultPrompt;
             try
             {
-                // TODO: Should we cache PSCommands like this as static members?
-                PSCommand command = new PSCommand().AddCommand("prompt");
                 IReadOnlyList<string> results = InvokePSCommand<string>(
-                    command,
+                    s_promptCommand,
                     executionOptions: new PowerShellExecutionOptions { ThrowOnError = false },
                     cancellationToken);
 
@@ -1207,7 +1287,18 @@ Set-MappedKeyHandlers
             return runspace;
         }
 
-        // NOTE: This token is received from PSReadLine, and it _is_ the ReadKey cancellation token!
+        /// <summary>
+        /// This delegate is handed to PSReadLine and overrides similar logic within its `ReadKey`
+        /// method. Essentially we're replacing PowerShell's `OnIdle` handler since the PowerShell
+        /// engine isn't idle when we're sitting in PSReadLine's `ReadKey` loop. In our case we also
+        /// use this idle time to process queued tasks by executing those that can run in the
+        /// background, and canceling the foreground task if a queued tasks requires the foreground.
+        /// Finally, if and only if we have to, we run an artificial pipeline to force PowerShell's
+        /// own event processing.
+        /// </summary>
+        /// <param name="idleCancellationToken">
+        /// This token is received from PSReadLine, and it is the ReadKey cancellation token!
+        /// </param>
         internal void OnPowerShellIdle(CancellationToken idleCancellationToken)
         {
             IReadOnlyList<PSEventSubscriber> eventSubscribers = _mainRunspaceEngineIntrinsics.Events.Subscribers;
@@ -1250,17 +1341,27 @@ Set-MappedKeyHandlers
 
                     // If we're executing a PowerShell task, we don't need to run an extra pipeline
                     // later for events.
-                    runPipelineForEventProcessing = task is not ISynchronousPowerShellTask;
+                    if (task is ISynchronousPowerShellTask)
+                    {
+                        // We don't ever want to set this to true here, just skip if it had
+                        // previously been set true.
+                        runPipelineForEventProcessing = false;
+                    }
                     ExecuteTaskSynchronously(task, cancellationScope.CancellationToken);
                 }
             }
 
             // We didn't end up executing anything in the background,
             // so we need to run a small artificial pipeline instead
-            // to force event processing
+            // to force event processing.
             if (runPipelineForEventProcessing)
             {
-                InvokePSCommand(new PSCommand().AddScript("0", useLocalScope: true), executionOptions: null, CancellationToken.None);
+                InvokePSCommand(
+                    new PSCommand().AddScript(
+                        "[System.Diagnostics.DebuggerHidden()]param() 0",
+                        useLocalScope: true),
+                    executionOptions: null,
+                    CancellationToken.None);
             }
         }
 

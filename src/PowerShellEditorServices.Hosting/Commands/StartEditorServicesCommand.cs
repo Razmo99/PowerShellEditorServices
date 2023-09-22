@@ -224,10 +224,7 @@ namespace Microsoft.PowerShell.EditorServices.Commands
                 // Create the configuration from parameters
                 EditorServicesConfig editorServicesConfig = CreateConfigObject();
 
-                SessionFileWriter sessionFileWriter = new(_logger, SessionDetailsPath);
-                _logger.Log(PsesLogLevel.Diagnostic, "Session file writer created");
-
-                using EditorServicesLoader psesLoader = EditorServicesLoader.Create(_logger, editorServicesConfig, sessionFileWriter, _loggerUnsubscribers);
+                using EditorServicesLoader psesLoader = EditorServicesLoader.Create(_logger, editorServicesConfig, SessionDetailsPath, _loggerUnsubscribers);
                 _logger.Log(PsesLogLevel.Verbose, "Loading EditorServices");
                 // Synchronously start editor services and wait here until it shuts down.
 #pragma warning disable VSTHRD002
@@ -304,7 +301,7 @@ namespace Microsoft.PowerShell.EditorServices.Commands
         {
             _logger.Log(PsesLogLevel.Verbose, "Removing PSReadLine");
             using SMA.PowerShell pwsh = SMA.PowerShell.Create(RunspaceMode.CurrentRunspace);
-            bool hasPSReadLine = pwsh.AddCommand(new CmdletInfo("Microsoft.PowerShell.Core\\Get-Module", typeof(GetModuleCommand)))
+            bool hasPSReadLine = pwsh.AddCommand(new CmdletInfo(@"Microsoft.PowerShell.Core\Get-Module", typeof(GetModuleCommand)))
                 .AddParameter("Name", "PSReadLine")
                 .Invoke()
                 .Count > 0;
@@ -313,7 +310,7 @@ namespace Microsoft.PowerShell.EditorServices.Commands
             {
                 pwsh.Commands.Clear();
 
-                pwsh.AddCommand(new CmdletInfo("Microsoft.PowerShell.Core\\Remove-Module", typeof(RemoveModuleCommand)))
+                pwsh.AddCommand(new CmdletInfo(@"Microsoft.PowerShell.Core\Remove-Module", typeof(RemoveModuleCommand)))
                     .AddParameter("Name", "PSReadLine")
                     .AddParameter("ErrorAction", "SilentlyContinue");
 
@@ -394,7 +391,7 @@ namespace Microsoft.PowerShell.EditorServices.Commands
                 $"{HostProfileId}_profile.ps1");
         }
 
-        // We should only use PSReadLine if we specificied that we want a console repl
+        // We should only use PSReadLine if we specified that we want a console repl
         // and we have not explicitly said to use the legacy ReadLine.
         // We also want it if we are either:
         // * On Windows on any version OR

@@ -30,7 +30,7 @@ namespace Microsoft.PowerShell.EditorServices.Services
     {
         #region Fields
 
-        private const string PsesGlobalVariableNamePrefix = "__psEditorServices_";
+        internal const string PsesGlobalVariableNamePrefix = "__psEditorServices_";
         private const string TemporaryScriptFileName = "Script Listing.ps1";
 
         private readonly ILogger _logger;
@@ -130,12 +130,12 @@ namespace Microsoft.PowerShell.EditorServices.Services
         /// <param name="breakpoints">BreakpointDetails for each breakpoint that will be set.</param>
         /// <param name="clearExisting">If true, causes all existing breakpoints to be cleared before setting new ones.</param>
         /// <returns>An awaitable Task that will provide details about the breakpoints that were set.</returns>
-        public async Task<BreakpointDetails[]> SetLineBreakpointsAsync(
+        public async Task<IReadOnlyList<BreakpointDetails>> SetLineBreakpointsAsync(
             ScriptFile scriptFile,
-            BreakpointDetails[] breakpoints,
+            IReadOnlyList<BreakpointDetails> breakpoints,
             bool clearExisting = true)
         {
-            DscBreakpointCapability dscBreakpoints = await _debugContext.GetDscBreakpointCapabilityAsync(CancellationToken.None).ConfigureAwait(false);
+            DscBreakpointCapability dscBreakpoints = await _debugContext.GetDscBreakpointCapabilityAsync().ConfigureAwait(false);
 
             string scriptPath = scriptFile.FilePath;
 
@@ -168,7 +168,7 @@ namespace Microsoft.PowerShell.EditorServices.Services
                     await _breakpointService.RemoveAllBreakpointsAsync(scriptFile.FilePath).ConfigureAwait(false);
                 }
 
-                return (await _breakpointService.SetBreakpointsAsync(escapedScriptPath, breakpoints).ConfigureAwait(false)).ToArray();
+                return await _breakpointService.SetBreakpointsAsync(escapedScriptPath, breakpoints).ConfigureAwait(false);
             }
 
             return await dscBreakpoints
@@ -182,25 +182,20 @@ namespace Microsoft.PowerShell.EditorServices.Services
         /// <param name="breakpoints">CommandBreakpointDetails for each command breakpoint that will be set.</param>
         /// <param name="clearExisting">If true, causes all existing function breakpoints to be cleared before setting new ones.</param>
         /// <returns>An awaitable Task that will provide details about the breakpoints that were set.</returns>
-        public async Task<CommandBreakpointDetails[]> SetCommandBreakpointsAsync(
-            CommandBreakpointDetails[] breakpoints,
+        public async Task<IReadOnlyList<CommandBreakpointDetails>> SetCommandBreakpointsAsync(
+            IReadOnlyList<CommandBreakpointDetails> breakpoints,
             bool clearExisting = true)
         {
-            CommandBreakpointDetails[] resultBreakpointDetails = null;
-
             if (clearExisting)
             {
                 // Flatten dictionary values into one list and remove them all.
-                IEnumerable<Breakpoint> existingBreakpoints = await _breakpointService.GetBreakpointsAsync().ConfigureAwait(false);
+                IReadOnlyList<Breakpoint> existingBreakpoints = await _breakpointService.GetBreakpointsAsync().ConfigureAwait(false);
                 await _breakpointService.RemoveBreakpointsAsync(existingBreakpoints.OfType<CommandBreakpoint>()).ConfigureAwait(false);
             }
 
-            if (breakpoints.Length > 0)
-            {
-                resultBreakpointDetails = (await _breakpointService.SetCommandBreakpointsAsync(breakpoints).ConfigureAwait(false)).ToArray();
-            }
-
-            return resultBreakpointDetails ?? Array.Empty<CommandBreakpointDetails>();
+            return breakpoints.Count > 0
+                ? await _breakpointService.SetCommandBreakpointsAsync(breakpoints).ConfigureAwait(false)
+                : Array.Empty<CommandBreakpointDetails>();
         }
 
         /// <summary>
@@ -372,7 +367,7 @@ namespace Microsoft.PowerShell.EditorServices.Services
 
             // Evaluate the expression to get back a PowerShell object from the expression string.
             // This may throw, in which case the exception is propagated to the caller
-            PSCommand evaluateExpressionCommand = new PSCommand().AddScript(value);
+            PSCommand evaluateExpressionCommand = new PSCommand().AddScript($"[System.Diagnostics.DebuggerHidden()]param() {value}");
             IReadOnlyList<object> expressionResults = await _executionService.ExecutePSCommandAsync<object>(evaluateExpressionCommand, CancellationToken.None).ConfigureAwait(false);
             if (expressionResults.Count == 0)
             {
@@ -505,7 +500,7 @@ namespace Microsoft.PowerShell.EditorServices.Services
             bool writeResultAsOutput,
             CancellationToken cancellationToken)
         {
-            PSCommand command = new PSCommand().AddScript(expressionString);
+            PSCommand command = new PSCommand().AddScript($"[System.Diagnostics.DebuggerHidden()]param() {expressionString}");
             IReadOnlyList<PSObject> results;
             try
             {
@@ -804,7 +799,7 @@ namespace Microsoft.PowerShell.EditorServices.Services
 
             // PSObject is used here instead of the specific type because we get deserialized
             // objects from remote sessions and want a common interface.
-            PSCommand psCommand = new PSCommand().AddScript($"[Collections.ArrayList]{callStackVarName} = @(); {getPSCallStack}; {returnSerializedIfInRemoteRunspace}");
+            PSCommand psCommand = new PSCommand().AddScript($"[System.Diagnostics.DebuggerHidden()]param() [Collections.ArrayList]{callStackVarName} = @(); {getPSCallStack}; {returnSerializedIfInRemoteRunspace}");
             IReadOnlyList<PSObject> results = await _executionService.ExecutePSCommandAsync<PSObject>(psCommand, CancellationToken.None).ConfigureAwait(false);
 
             IEnumerable callStack = isRemoteRunspace
@@ -935,13 +930,24 @@ namespace Microsoft.PowerShell.EditorServices.Services
                 if (_remoteFileManager is not null && string.IsNullOrEmpty(localScriptPath))
                 {
                     // Get the current script listing and create the buffer
-                    PSCommand command = new PSCommand().AddScript($"list 1 {int.MaxValue}");
+                    IReadOnlyList<PSObject> scriptListingLines;
+                    await debugInfoHandle.WaitAsync().ConfigureAwait(false);
+                    try
+                    {
+                        // This command must be run through `ExecuteInDebugger`!
+                        PSCommand psCommand = new PSCommand().AddScript($"list 1 {int.MaxValue}");
 
-                    IReadOnlyList<PSObject> scriptListingLines =
-                        await _executionService.ExecutePSCommandAsync<PSObject>(
-                            command, CancellationToken.None).ConfigureAwait(false);
+                        scriptListingLines =
+                            await _executionService.ExecutePSCommandAsync<PSObject>(
+                                psCommand,
+                                CancellationToken.None).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        debugInfoHandle.Release();
+                    }
 
-                    if (scriptListingLines is not null)
+                    if (scriptListingLines.Count > 0)
                     {
                         int linePrefixLength = 0;
 
