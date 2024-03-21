@@ -108,14 +108,24 @@ namespace Microsoft.PowerShell.EditorServices.Refactoring
 
         public static Ast GetAst(int StartLineNumber, int StartColumnNumber, Ast Ast)
         {
-            Ast token = null;
 
-            token = Ast.Find(ast =>
+            // Get all the tokens on the startline so we can look for an appropriate Ast to return
+            IEnumerable<Ast> tokens = Ast.FindAll(ast =>
             {
-                return StartLineNumber == ast.Extent.StartLineNumber &&
-                ast.Extent.EndColumnNumber >= StartColumnNumber &&
-                    StartColumnNumber >= ast.Extent.StartColumnNumber;
+                return StartLineNumber == ast.Extent.StartLineNumber;
             }, true);
+            // Check if the Ast is a FunctionDefinitionAst
+            IEnumerable<FunctionDefinitionAst> Functions = tokens.OfType<FunctionDefinitionAst>();
+            if (Functions.Any())
+            {
+                foreach (FunctionDefinitionAst Function in Functions)
+                {
+                    if (Function.Extent.StartLineNumber != Function.Extent.EndLineNumber)
+                    {
+                        return Function;
+                    }
+                }
+            }
 
             if (token is NamedBlockAst)
             {
@@ -134,14 +144,20 @@ namespace Microsoft.PowerShell.EditorServices.Refactoring
 
             IEnumerable<Ast> tokens = token.FindAll(ast =>
             {
-                return ast.Extent.EndColumnNumber >= StartColumnNumber
-                && StartColumnNumber >= ast.Extent.StartColumnNumber;
+                return ast.Extent.StartLineNumber == StartLineNumber &&
+                ast.Extent.StartColumnNumber <= StartColumnNumber &&
+                ast.Extent.EndColumnNumber >= StartColumnNumber;
             }, true);
-            if (tokens.Count() > 1)
+            if (token != null)
             {
-                token = tokens.LastOrDefault();
+                if (token.First() is AssignmentStatementAst Assignment)
+                {
+                    return Assignment.Left;
+                }
+                return token.Last();
             }
-            return token;
+
+            return token.First();
         }
     }
 }
