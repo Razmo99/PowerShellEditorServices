@@ -149,5 +149,17 @@ namespace PowerShellEditorServices.Test.Refactoring
             Assert.Equal(1,symbol.Extent.StartColumnNumber);
 
         }
+        [Fact]
+        public void AssertContainsDotSourcingTrue()
+        {
+            ScriptFile scriptFile = GetTestScript("TestDotSourcingTrue.ps1");
+            Assert.True(Utilities.AssertContainsDotSourced(scriptFile.ScriptAst));
+        }
+        [Fact]
+        public void AssertContainsDotSourcingFalse()
+        {
+            ScriptFile scriptFile = GetTestScript("TestDotSourcingFalse.ps1");
+            Assert.False(Utilities.AssertContainsDotSourced(scriptFile.ScriptAst));
+        }
     }
 }
