@@ -7,9 +7,11 @@ using System.IO;
 using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.PowerShell.EditorServices.Services;
-using Microsoft.PowerShell.EditorServices.Test.Shared;
 using Microsoft.PowerShell.EditorServices.Services.TextDocument;
 using Xunit;
+using Microsoft.PowerShell.EditorServices.Utility;
+using OmniSharp.Extensions.LanguageServer.Protocol.Models;
+using OmniSharp.Extensions.LanguageServer.Protocol;
 
 namespace PowerShellEditorServices.Test.Session
 {
@@ -22,35 +24,76 @@ namespace PowerShellEditorServices.Test.Session
             ? s_lazyDriveLetter.Value
             : string.Empty;
 
+        internal static ScriptFile CreateScriptFile(string path) => ScriptFile.Create(path, "", VersionUtils.PSVersion);
+
+        // Remember that LSP does weird stuff to the drive letter, so we have to convert it to a URI
+        // and back to ensure that drive letter gets lower cased and everything matches up.
+        private static string s_workspacePath =>
+        DocumentUri.FromFileSystemPath(Path.GetFullPath("Fixtures/Workspace")).GetFileSystemPath();
+
         [Fact]
         public void CanResolveWorkspaceRelativePath()
         {
-            string workspacePath = TestUtilities.NormalizePath("c:/Test/Workspace/");
-            string testPathInside = TestUtilities.NormalizePath("c:/Test/Workspace/SubFolder/FilePath.ps1");
-            string testPathOutside = TestUtilities.NormalizePath("c:/Test/PeerPath/FilePath.ps1");
-            string testPathAnotherDrive = TestUtilities.NormalizePath("z:/TryAndFindMe/FilePath.ps1");
+            string workspacePath = "c:/Test/Workspace/";
+            ScriptFile testPathInside = CreateScriptFile("c:/Test/Workspace/SubFolder/FilePath.ps1");
+            ScriptFile testPathOutside = CreateScriptFile("c:/Test/PeerPath/FilePath.ps1");
+            ScriptFile testPathAnotherDrive = CreateScriptFile("z:/TryAndFindMe/FilePath.ps1");
 
             WorkspaceService workspace = new(NullLoggerFactory.Instance);
 
-            // Test without a workspace path
-            Assert.Equal(testPathOutside, workspace.GetRelativePath(testPathOutside));
+            // Test with zero workspace folders
+            Assert.Equal(
+                testPathOutside.DocumentUri.ToUri().AbsolutePath,
+                workspace.GetRelativePath(testPathOutside));
 
-            string expectedInsidePath = TestUtilities.NormalizePath("SubFolder/FilePath.ps1");
-            string expectedOutsidePath = TestUtilities.NormalizePath("../PeerPath/FilePath.ps1");
+            string expectedInsidePath = "SubFolder/FilePath.ps1";
+            string expectedOutsidePath = "../PeerPath/FilePath.ps1";
 
-            // Test with a workspace path
-            workspace.InitialWorkingDirectory = workspacePath;
+            // Test with a single workspace folder
+            workspace.WorkspaceFolders.Add(new WorkspaceFolder
+            {
+                Uri = DocumentUri.FromFileSystemPath(workspacePath)
+            });
+
             Assert.Equal(expectedInsidePath, workspace.GetRelativePath(testPathInside));
             Assert.Equal(expectedOutsidePath, workspace.GetRelativePath(testPathOutside));
-            Assert.Equal(testPathAnotherDrive, workspace.GetRelativePath(testPathAnotherDrive));
+            Assert.Equal(
+                testPathAnotherDrive.DocumentUri.ToUri().AbsolutePath,
+                workspace.GetRelativePath(testPathAnotherDrive));
+
+            // Test with two workspace folders
+            string anotherWorkspacePath = "c:/Test/AnotherWorkspace/";
+            ScriptFile anotherTestPathInside = CreateScriptFile("c:/Test/AnotherWorkspace/DifferentFolder/FilePath.ps1");
+            string anotherExpectedInsidePath = "DifferentFolder/FilePath.ps1";
+
+            workspace.WorkspaceFolders.Add(new WorkspaceFolder
+            {
+                Uri = DocumentUri.FromFileSystemPath(anotherWorkspacePath)
+            });
+
+            Assert.Equal(expectedInsidePath, workspace.GetRelativePath(testPathInside));
+            Assert.Equal(anotherExpectedInsidePath, workspace.GetRelativePath(anotherTestPathInside));
         }
 
         internal static WorkspaceService FixturesWorkspace()
         {
             return new WorkspaceService(NullLoggerFactory.Instance)
             {
-                InitialWorkingDirectory = TestUtilities.NormalizePath("Fixtures/Workspace")
+                WorkspaceFolders =
+                {
+                    new WorkspaceFolder { Uri = DocumentUri.FromFileSystemPath(s_workspacePath) }
+                }
             };
+        }
+
+        [Fact]
+        public void HasDefaultForWorkspacePaths()
+        {
+            WorkspaceService workspace = FixturesWorkspace();
+            string workspacePath = Assert.Single(workspace.WorkspacePaths);
+            Assert.Equal(s_workspacePath, workspacePath);
+            // We shouldn't assume an initial working directory since none was given.
+            Assert.Null(workspace.InitialWorkingDirectory);
         }
 
         // These are the default values for the EnumeratePSFiles() method
@@ -94,10 +137,10 @@ namespace PowerShellEditorServices.Test.Session
 
             List<string> expected = new()
             {
-                Path.Combine(workspace.InitialWorkingDirectory, "nested", "donotfind.ps1"),
-                Path.Combine(workspace.InitialWorkingDirectory, "nested", "nestedmodule.psd1"),
-                Path.Combine(workspace.InitialWorkingDirectory, "nested", "nestedmodule.psm1"),
-                Path.Combine(workspace.InitialWorkingDirectory, "rootfile.ps1")
+                Path.Combine(s_workspacePath, "nested", "donotfind.ps1"),
+                Path.Combine(s_workspacePath, "nested", "nestedmodule.psd1"),
+                Path.Combine(s_workspacePath, "nested", "nestedmodule.psm1"),
+                Path.Combine(s_workspacePath, "rootfile.ps1")
             };
 
             // .NET Core doesn't appear to use the same three letter pattern matching rule although the docs
@@ -105,7 +148,7 @@ namespace PowerShellEditorServices.Test.Session
             // ref https://docs.microsoft.com/en-us/dotnet/api/system.io.directory.getfiles?view=netcore-2.1#System_IO_Directory_GetFiles_System_String_System_String_System_IO_EnumerationOptions_
             if (RuntimeInformation.FrameworkDescription.StartsWith(".NET Framework"))
             {
-                expected.Insert(3, Path.Combine(workspace.InitialWorkingDirectory, "other", "other.ps1xml"));
+                expected.Insert(3, Path.Combine(s_workspacePath, "other", "other.ps1xml"));
             }
 
             Assert.Equal(expected, actual);
@@ -122,7 +165,7 @@ namespace PowerShellEditorServices.Test.Session
                 maxDepth: 1,
                 ignoreReparsePoints: s_defaultIgnoreReparsePoints
             );
-            Assert.Equal(new[] { Path.Combine(workspace.InitialWorkingDirectory, "rootfile.ps1") }, actual);
+            Assert.Equal(new[] { Path.Combine(s_workspacePath, "rootfile.ps1") }, actual);
         }
 
         [Fact]
@@ -138,50 +181,16 @@ namespace PowerShellEditorServices.Test.Session
             );
 
             Assert.Equal(new[] {
-                    Path.Combine(workspace.InitialWorkingDirectory, "nested", "nestedmodule.psd1"),
-                    Path.Combine(workspace.InitialWorkingDirectory, "rootfile.ps1")
+                    Path.Combine(s_workspacePath, "nested", "nestedmodule.psd1"),
+                    Path.Combine(s_workspacePath, "rootfile.ps1")
                 }, actual);
-        }
-
-        [Fact]
-        public void CanDetermineIsPathInMemory()
-        {
-            string tempDir = Path.GetTempPath();
-            string shortDirPath = Path.Combine(tempDir, "GitHub", "PowerShellEditorServices");
-            string shortFilePath = Path.Combine(shortDirPath, "foo.ps1");
-            const string shortUriForm = "git:/c%3A/Users/Keith/GitHub/dahlbyk/posh-git/src/PoshGitTypes.ps1?%7B%22path%22%3A%22c%3A%5C%5CUsers%5C%5CKeith%5C%5CGitHub%5C%5Cdahlbyk%5C%5Cposh-git%5C%5Csrc%5C%5CPoshGitTypes.ps1%22%2C%22ref%22%3A%22~%22%7D";
-            const string longUriForm = "gitlens-git:c%3A%5CUsers%5CKeith%5CGitHub%5Cdahlbyk%5Cposh-git%5Csrc%5CPoshGitTypes%3Ae0022701.ps1?%7B%22fileName%22%3A%22src%2FPoshGitTypes.ps1%22%2C%22repoPath%22%3A%22c%3A%2FUsers%2FKeith%2FGitHub%2Fdahlbyk%2Fposh-git%22%2C%22sha%22%3A%22e0022701fa12e0bc22d0458673d6443c942b974a%22%7D";
-
-            string[] inMemoryPaths = new[] {
-                // Test short non-file paths
-                "untitled:untitled-1",
-                shortUriForm,
-                "inmemory://foo.ps1",
-                // Test long non-file path
-                longUriForm
-            };
-
-            Assert.All(inMemoryPaths, (p) => Assert.True(WorkspaceService.IsPathInMemory(p)));
-
-            string[] notInMemoryPaths = new[] {
-                // Test short file absolute paths
-                shortDirPath,
-                shortFilePath,
-                new Uri(shortDirPath).ToString(),
-                new Uri(shortFilePath).ToString(),
-                // Test short file relative paths
-                "foo.ps1",
-                Path.Combine(new[] { "..", "foo.ps1" })
-            };
-
-            Assert.All(notInMemoryPaths, (p) => Assert.False(WorkspaceService.IsPathInMemory(p)));
         }
 
         [Fact]
         public void CanOpenAndCloseFile()
         {
             WorkspaceService workspace = FixturesWorkspace();
-            string filePath = Path.GetFullPath(Path.Combine(workspace.InitialWorkingDirectory, "rootfile.ps1"));
+            string filePath = Path.GetFullPath(Path.Combine(s_workspacePath, "rootfile.ps1"));
 
             ScriptFile file = workspace.GetFile(filePath);
             Assert.Equal(workspace.GetOpenedFiles(), new[] { file });

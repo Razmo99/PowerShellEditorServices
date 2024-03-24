@@ -35,7 +35,32 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
     {
         internal const string DefaultPrompt = "> ";
 
+        private static readonly PSCommand s_promptCommand = new PSCommand().AddCommand("prompt");
+
         private static readonly PropertyInfo s_scriptDebuggerTriggerObjectProperty;
+
+        /// <summary>
+        /// To workaround a horrid bug where the `TranscribeOnly` field of the PSHostUserInterface
+        /// can accidentally remain true, we have to use a bunch of reflection so that <see
+        /// cref="DisableTranscribeOnly()" /> can reset it to false. (This was fixed in PowerShell
+        /// 7.) Note that it must be the internal UI instance, not our own UI instance, otherwise
+        /// this would be easier. Because of the amount of reflection involved, we contain it to
+        /// only PowerShell 5.1 at compile-time, and we have to set this up in this class, not <see
+        /// cref="SynchronousPowerShellTask" /> because that's templated, making statics practically
+        /// useless. <see cref = "SynchronousPowerShellTask.ExecuteNormally" /> method calls <see
+        /// cref="DisableTranscribeOnly()" /> when necessary.
+        /// See: https://github.com/PowerShell/PowerShell/pull/3436
+        /// </summary>
+        [ThreadStatic] // Because we can re-use it, but only once per instance of PSES.
+        private static PSHostUserInterface s_internalPSHostUserInterface;
+
+        private static readonly Func<PSHostUserInterface, bool> s_getTranscribeOnlyDelegate;
+
+        private static readonly Action<PSHostUserInterface, bool> s_setTranscribeOnlyDelegate;
+
+        private static readonly PropertyInfo s_executionContextProperty;
+
+        private static readonly PropertyInfo s_internalHostProperty;
 
         private readonly ILoggerFactory _loggerFactory;
 
@@ -102,6 +127,31 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
             s_scriptDebuggerTriggerObjectProperty = scriptDebuggerType.GetProperty(
                 "TriggerObject",
                 BindingFlags.Instance | BindingFlags.NonPublic);
+
+            if (VersionUtils.IsNetCore)
+            {
+                // The following reflection methods are only needed for the .NET Framework.
+                return;
+            }
+
+            PropertyInfo transcribeOnlyProperty = typeof(PSHostUserInterface)
+                .GetProperty("TranscribeOnly", BindingFlags.NonPublic | BindingFlags.Instance);
+
+            MethodInfo transcribeOnlyGetMethod = transcribeOnlyProperty.GetGetMethod(nonPublic: true);
+
+            s_getTranscribeOnlyDelegate = (Func<PSHostUserInterface, bool>)Delegate.CreateDelegate(
+                typeof(Func<PSHostUserInterface, bool>), transcribeOnlyGetMethod);
+
+            MethodInfo transcribeOnlySetMethod = transcribeOnlyProperty.GetSetMethod(nonPublic: true);
+
+            s_setTranscribeOnlyDelegate = (Action<PSHostUserInterface, bool>)Delegate.CreateDelegate(
+                typeof(Action<PSHostUserInterface, bool>), transcribeOnlySetMethod);
+
+            s_executionContextProperty = typeof(Runspace)
+                .GetProperty("ExecutionContext", BindingFlags.NonPublic | BindingFlags.Instance);
+
+            s_internalHostProperty = s_executionContextProperty.PropertyType
+                .GetProperty("InternalHost", BindingFlags.NonPublic | BindingFlags.Instance);
         }
 
         public PsesInternalHost(
@@ -143,9 +193,9 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
             Version = hostInfo.Version;
 
             DebugContext = new PowerShellDebugContext(loggerFactory, this);
-            UI = hostInfo.ConsoleReplEnabled
-                ? new EditorServicesConsolePSHostUserInterface(loggerFactory, hostInfo.PSHost.UI)
-                : new NullPSHostUI();
+            UI = hostInfo.UseNullPSHostUI
+                ? new NullPSHostUI()
+                : new EditorServicesConsolePSHostUserInterface(loggerFactory, hostInfo.PSHost.UI);
         }
 
         public override CultureInfo CurrentCulture => _hostInfo.PSHost.CurrentCulture;
@@ -251,6 +301,13 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
 
             _pipelineThread.Start();
 
+            if (startOptions.InitialWorkingDirectory is not null)
+            {
+                _logger.LogDebug($"Setting InitialWorkingDirectory to {startOptions.InitialWorkingDirectory}...");
+                await SetInitialWorkingDirectoryAsync(startOptions.InitialWorkingDirectory, cancellationToken).ConfigureAwait(false);
+                _logger.LogDebug("InitialWorkingDirectory set!");
+            }
+
             if (startOptions.LoadProfiles)
             {
                 _logger.LogDebug("Loading profiles...");
@@ -268,13 +325,6 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
             else
             {
                 _logger.LogDebug("Shell integration not enabled!");
-            }
-
-            if (startOptions.InitialWorkingDirectory is not null)
-            {
-                _logger.LogDebug($"Setting InitialWorkingDirectory to {startOptions.InitialWorkingDirectory}...");
-                await SetInitialWorkingDirectoryAsync(startOptions.InitialWorkingDirectory, cancellationToken).ConfigureAwait(false);
-                _logger.LogDebug("InitialWorkingDirectory set!");
             }
 
             await _started.Task.ConfigureAwait(false);
@@ -493,6 +543,34 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
 
         internal void AddToHistory(string historyEntry) => _readLineProvider.ReadLine.AddToHistory(historyEntry);
 
+        // This works around a bug in PowerShell 5.1 (that was later fixed) where a running
+        // transcription could cause output to disappear since the `TranscribeOnly` property was
+        // accidentally not reset to false.
+        internal void DisableTranscribeOnly()
+        {
+            if (VersionUtils.IsNetCore)
+            {
+                return;
+            }
+
+            // To fix the TranscribeOnly bug, we have to get the internal UI, which involves a lot
+            // of reflection since we can't always just use PowerShell to execute `$Host.UI`.
+            s_internalPSHostUserInterface ??=
+                (s_internalHostProperty.GetValue(
+                    s_executionContextProperty.GetValue(CurrentPowerShell.Runspace))
+                    as PSHost)?.UI;
+
+            if (s_internalPSHostUserInterface is null)
+            {
+                return;
+            }
+
+            if (s_getTranscribeOnlyDelegate(s_internalPSHostUserInterface))
+            {
+                s_setTranscribeOnlyDelegate(s_internalPSHostUserInterface, false);
+            }
+        }
+
         internal Task LoadHostProfilesAsync(CancellationToken cancellationToken)
         {
             // NOTE: This is a special task run on startup!
@@ -505,7 +583,7 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
 
         private Task EnableShellIntegrationAsync(CancellationToken cancellationToken)
         {
-            // Imported on 01/03/23 from
+            // Imported on 01/03/24 from
             // https://github.com/microsoft/vscode/blob/main/src/vs/workbench/contrib/terminal/browser/media/shellIntegration.ps1
             // with quotes escaped, `__VSCodeOriginalPSConsoleHostReadLine` removed (as it's done
             // in our own ReadLine function), and `[Console]::Write` replaced with `Write-Host`.
@@ -524,42 +602,74 @@ $Global:__VSCodeOriginalPrompt = $function:Prompt
 
 $Global:__LastHistoryId = -1
 
+# Store the nonce in script scope and unset the global
+$Nonce = $env:VSCODE_NONCE
+$env:VSCODE_NONCE = $null
+
+if ($env:VSCODE_ENV_REPLACE) {
+	$Split = $env:VSCODE_ENV_REPLACE.Split("":"")
+	foreach ($Item in $Split) {
+		$Inner = $Item.Split('=')
+		[Environment]::SetEnvironmentVariable($Inner[0], $Inner[1].Replace('\x3a', ':'))
+	}
+	$env:VSCODE_ENV_REPLACE = $null
+}
+if ($env:VSCODE_ENV_PREPEND) {
+	$Split = $env:VSCODE_ENV_PREPEND.Split("":"")
+	foreach ($Item in $Split) {
+		$Inner = $Item.Split('=')
+		[Environment]::SetEnvironmentVariable($Inner[0], $Inner[1].Replace('\x3a', ':') + [Environment]::GetEnvironmentVariable($Inner[0]))
+	}
+	$env:VSCODE_ENV_PREPEND = $null
+}
+if ($env:VSCODE_ENV_APPEND) {
+	$Split = $env:VSCODE_ENV_APPEND.Split("":"")
+	foreach ($Item in $Split) {
+		$Inner = $Item.Split('=')
+		[Environment]::SetEnvironmentVariable($Inner[0], [Environment]::GetEnvironmentVariable($Inner[0]) + $Inner[1].Replace('\x3a', ':'))
+	}
+	$env:VSCODE_ENV_APPEND = $null
+}
+
 function Global:__VSCode-Escape-Value([string]$value) {
 	# NOTE: In PowerShell v6.1+, this can be written `$value -replace '…', { … }` instead of `[regex]::Replace`.
 	# Replace any non-alphanumeric characters.
 	[regex]::Replace($value, '[\\\n;]', { param($match)
-		# Encode the (ascii) matches as `\x<hex>`
-		-Join (
-			[System.Text.Encoding]::UTF8.GetBytes($match.Value) | ForEach-Object { '\x{0:x2}' -f $_ }
-		)
-	})
+			# Encode the (ascii) matches as `\x<hex>`
+			-Join (
+				[System.Text.Encoding]::UTF8.GetBytes($match.Value) | ForEach-Object { '\x{0:x2}' -f $_ }
+			)
+		})
 }
 
 function Global:Prompt() {
+	$FakeCode = [int]!$global:?
 	# NOTE: We disable strict mode for the scope of this function because it unhelpfully throws an
 	# error when $LastHistoryEntry is null, and is not otherwise useful.
 	Set-StrictMode -Off
-	$FakeCode = [int]!$global:?
 	$LastHistoryEntry = Get-History -Count 1
 	# Skip finishing the command if the first command has not yet started
 	if ($Global:__LastHistoryId -ne -1) {
 		if ($LastHistoryEntry.Id -eq $Global:__LastHistoryId) {
 			# Don't provide a command line or exit code if there was no history entry (eg. ctrl+c, enter on no command)
-			$Result  = ""$([char]0x1b)]633;E`a""
+			$Result = ""$([char]0x1b)]633;E`a""
 			$Result += ""$([char]0x1b)]633;D`a""
-		} else {
+		}
+		else {
 			# Command finished command line
-			# OSC 633 ; A ; <CommandLine?> ST
-			$Result  = ""$([char]0x1b)]633;E;""
+			# OSC 633 ; E ; <CommandLine?> ; <Nonce?> ST
+			$Result = ""$([char]0x1b)]633;E;""
 			# Sanitize the command line to ensure it can get transferred to the terminal and can be parsed
 			# correctly. This isn't entirely safe but good for most cases, it's important for the Pt parameter
 			# to only be composed of _printable_ characters as per the spec.
 			if ($LastHistoryEntry.CommandLine) {
 				$CommandLine = $LastHistoryEntry.CommandLine
-			} else {
+			}
+			else {
 				$CommandLine = """"
 			}
 			$Result += $(__VSCode-Escape-Value $CommandLine)
+			$Result += "";$Nonce""
 			$Result += ""`a""
 			# Command finished exit code
 			# OSC 633 ; D [; <ExitCode>] ST
@@ -571,7 +681,7 @@ function Global:Prompt() {
 	$Result += ""$([char]0x1b)]633;A`a""
 	# Current working directory
 	# OSC 633 ; <Property>=<Value> ST
-	$Result += if($pwd.Provider.Name -eq 'FileSystem'){""$([char]0x1b)]633;P;Cwd=$(__VSCode-Escape-Value $pwd.ProviderPath)`a""}
+	$Result += if ($pwd.Provider.Name -eq 'FileSystem') { ""$([char]0x1b)]633;P;Cwd=$(__VSCode-Escape-Value $pwd.ProviderPath)`a"" }
 	# Before running the original prompt, put $? back to what it was:
 	if ($FakeCode -ne 0) {
 		Write-Error ""failure"" -ea ignore
@@ -585,25 +695,92 @@ function Global:Prompt() {
 }
 
 # Set IsWindows property
-Write-Host -NoNewLine ""$([char]0x1b)]633;P;IsWindows=$($IsWindows)`a""
+if ($PSVersionTable.PSVersion -lt ""6.0"") {
+	# Windows PowerShell is only available on Windows
+	Write-Host -NoNewLine ""$([char]0x1b)]633;P;IsWindows=$true`a""
+}
+else {
+	Write-Host -NoNewLine ""$([char]0x1b)]633;P;IsWindows=$IsWindows`a""
+}
 
 # Set always on key handlers which map to default VS Code keybindings
 function Set-MappedKeyHandler {
 	param ([string[]] $Chord, [string[]]$Sequence)
-	$Handler = $(Get-PSReadLineKeyHandler -Chord $Chord | Select-Object -First 1)
+	try {
+		$Handler = Get-PSReadLineKeyHandler -Chord $Chord | Select-Object -First 1
+	}
+ catch [System.Management.Automation.ParameterBindingException] {
+		# PowerShell 5.1 ships with PSReadLine 2.0.0 which does not have -Chord,
+		# so we check what's bound and filter it.
+		$Handler = Get-PSReadLineKeyHandler -Bound | Where-Object -FilterScript { $_.Key -eq $Chord } | Select-Object -First 1
+	}
 	if ($Handler) {
 		Set-PSReadLineKeyHandler -Chord $Sequence -Function $Handler.Function
 	}
 }
 
+$Global:__VSCodeHaltCompletions = $false
 function Set-MappedKeyHandlers {
 	Set-MappedKeyHandler -Chord Ctrl+Spacebar -Sequence 'F12,a'
 	Set-MappedKeyHandler -Chord Alt+Spacebar -Sequence 'F12,b'
 	Set-MappedKeyHandler -Chord Shift+Enter -Sequence 'F12,c'
 	Set-MappedKeyHandler -Chord Shift+End -Sequence 'F12,d'
+
+	# Conditionally enable suggestions
+	if ($env:VSCODE_SUGGEST -eq '1') {
+		Remove-Item Env:VSCODE_SUGGEST
+
+		# VS Code send completions request (may override Ctrl+Spacebar)
+		Set-PSReadLineKeyHandler -Chord 'F12,e' -ScriptBlock {
+			Send-Completions
+		}
+
+		# Suggest trigger characters
+		Set-PSReadLineKeyHandler -Chord ""-"" -ScriptBlock {
+			[Microsoft.PowerShell.PSConsoleReadLine]::Insert(""-"")
+			if (!$Global:__VSCodeHaltCompletions) {
+				Send-Completions
+			}
+		}
+
+		Set-PSReadLineKeyHandler -Chord 'F12,y' -ScriptBlock {
+			$Global:__VSCodeHaltCompletions = $true
+		}
+
+		Set-PSReadLineKeyHandler -Chord 'F12,z' -ScriptBlock {
+			$Global:__VSCodeHaltCompletions = $false
+		}
+	}
 }
 
-Set-MappedKeyHandlers
+function Send-Completions {
+	$commandLine = """"
+	$cursorIndex = 0
+	# TODO: Since fuzzy matching exists, should completions be provided only for character after the
+	#       last space and then filter on the client side? That would let you trigger ctrl+space
+	#       anywhere on a word and have full completions available
+	[Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$commandLine, [ref]$cursorIndex)
+	$completionPrefix = $commandLine
+
+	# Get completions
+	$result = ""`e]633;Completions""
+	if ($completionPrefix.Length -gt 0) {
+		# Get and send completions
+		$completions = TabExpansion2 -inputScript $completionPrefix -cursorColumn $cursorIndex
+		if ($null -ne $completions.CompletionMatches) {
+			$result += "";$($completions.ReplacementIndex);$($completions.ReplacementLength);$($cursorIndex);""
+			$result += $completions.CompletionMatches | ConvertTo-Json -Compress
+		}
+	}
+	$result += ""`a""
+
+	Write-Host -NoNewLine $result
+}
+
+# Register key handlers if PSReadLine is available
+if (Get-Module -Name PSReadLine) {
+	Set-MappedKeyHandlers
+}
             ";
 
             return ExecutePSCommandAsync(new PSCommand().AddScript(shellIntegrationScript), cancellationToken);
@@ -1026,10 +1203,8 @@ Set-MappedKeyHandlers
             string prompt = DefaultPrompt;
             try
             {
-                // TODO: Should we cache PSCommands like this as static members?
-                PSCommand command = new PSCommand().AddCommand("prompt");
                 IReadOnlyList<string> results = InvokePSCommand<string>(
-                    command,
+                    s_promptCommand,
                     executionOptions: new PowerShellExecutionOptions { ThrowOnError = false },
                     cancellationToken);
 
@@ -1207,7 +1382,18 @@ Set-MappedKeyHandlers
             return runspace;
         }
 
-        // NOTE: This token is received from PSReadLine, and it _is_ the ReadKey cancellation token!
+        /// <summary>
+        /// This delegate is handed to PSReadLine and overrides similar logic within its `ReadKey`
+        /// method. Essentially we're replacing PowerShell's `OnIdle` handler since the PowerShell
+        /// engine isn't idle when we're sitting in PSReadLine's `ReadKey` loop. In our case we also
+        /// use this idle time to process queued tasks by executing those that can run in the
+        /// background, and canceling the foreground task if a queued tasks requires the foreground.
+        /// Finally, if and only if we have to, we run an artificial pipeline to force PowerShell's
+        /// own event processing.
+        /// </summary>
+        /// <param name="idleCancellationToken">
+        /// This token is received from PSReadLine, and it is the ReadKey cancellation token!
+        /// </param>
         internal void OnPowerShellIdle(CancellationToken idleCancellationToken)
         {
             IReadOnlyList<PSEventSubscriber> eventSubscribers = _mainRunspaceEngineIntrinsics.Events.Subscribers;
@@ -1250,17 +1436,27 @@ Set-MappedKeyHandlers
 
                     // If we're executing a PowerShell task, we don't need to run an extra pipeline
                     // later for events.
-                    runPipelineForEventProcessing = task is not ISynchronousPowerShellTask;
+                    if (task is ISynchronousPowerShellTask)
+                    {
+                        // We don't ever want to set this to true here, just skip if it had
+                        // previously been set true.
+                        runPipelineForEventProcessing = false;
+                    }
                     ExecuteTaskSynchronously(task, cancellationScope.CancellationToken);
                 }
             }
 
             // We didn't end up executing anything in the background,
             // so we need to run a small artificial pipeline instead
-            // to force event processing
+            // to force event processing.
             if (runPipelineForEventProcessing)
             {
-                InvokePSCommand(new PSCommand().AddScript("0", useLocalScope: true), executionOptions: null, CancellationToken.None);
+                InvokePSCommand(
+                    new PSCommand().AddScript(
+                        "[System.Diagnostics.DebuggerHidden()]param() 0",
+                        useLocalScope: true),
+                    executionOptions: null,
+                    CancellationToken.None);
             }
         }
 

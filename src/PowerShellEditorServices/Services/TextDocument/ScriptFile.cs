@@ -32,13 +32,6 @@ namespace Microsoft.PowerShell.EditorServices.Services.TextDocument
         #region Properties
 
         /// <summary>
-        /// Gets a unique string that identifies this file.  At this time,
-        /// this property returns a normalized version of the value stored
-        /// in the FilePath property.
-        /// </summary>
-        public string Id => FilePath.ToLower();
-
-        /// <summary>
         /// Gets the path at which this file resides.
         /// </summary>
         public string FilePath { get; }
@@ -153,15 +146,14 @@ namespace Microsoft.PowerShell.EditorServices.Services.TextDocument
         /// <param name="fileUri">The System.Uri of the file.</param>
         /// <param name="initialBuffer">The initial contents of the script file.</param>
         /// <param name="powerShellVersion">The version of PowerShell for which the script is being parsed.</param>
-        internal ScriptFile(
+        internal static ScriptFile Create(
             DocumentUri fileUri,
             string initialBuffer,
             Version powerShellVersion)
-            : this(
-                  fileUri,
-                  new StringReader(initialBuffer),
-                  powerShellVersion)
+
         {
+            using TextReader textReader = new StringReader(initialBuffer);
+            return new ScriptFile(fileUri, textReader, powerShellVersion);
         }
 
         #endregion
@@ -173,14 +165,7 @@ namespace Microsoft.PowerShell.EditorServices.Services.TextDocument
         /// </summary>
         /// <param name="text">Input string to be split up into lines.</param>
         /// <returns>The lines in the string.</returns>
-        internal static IList<string> GetLines(string text) => GetLinesInternal(text);
-
-        /// <summary>
-        /// Get the lines in a string.
-        /// </summary>
-        /// <param name="text">Input string to be split up into lines.</param>
-        /// <returns>The lines in the string.</returns>
-        internal static List<string> GetLinesInternal(string text)
+        internal static List<string> GetLines(string text)
         {
             if (text == null)
             {
@@ -520,7 +505,7 @@ namespace Microsoft.PowerShell.EditorServices.Services.TextDocument
         {
             // Split the file contents into lines and trim
             // any carriage returns from the strings.
-            FileLines = GetLinesInternal(fileContents);
+            FileLines = GetLines(fileContents);
 
             // Parse the contents to get syntax tree and errors
             ParseFileContents();
