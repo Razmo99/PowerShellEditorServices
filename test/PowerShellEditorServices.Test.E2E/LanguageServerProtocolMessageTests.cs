@@ -91,7 +91,7 @@ namespace PowerShellEditorServices.Test.E2E
                     throw new InvalidDataException("No diagnostics showed up after 20s.");
                 }
 
-                await Task.Delay(1000).ConfigureAwait(true);
+                await Task.Delay(1000);
             }
         }
 
@@ -101,15 +101,17 @@ namespace PowerShellEditorServices.Test.E2E
             PowerShellVersion details
                 = await PsesLanguageClient
                     .SendRequest("powerShell/getVersion", new GetVersionParams())
-                    .Returning<PowerShellVersion>(CancellationToken.None).ConfigureAwait(true);
+                    .Returning<PowerShellVersion>(CancellationToken.None);
 
             if (PwshExe == "powershell")
             {
                 Assert.Equal("Desktop", details.Edition);
+                Assert.StartsWith("5", details.Version);
             }
             else
             {
                 Assert.Equal("Core", details.Edition);
+                Assert.StartsWith("7", details.Version);
             }
         }
 
@@ -122,16 +124,16 @@ function CanSendWorkspaceSymbolRequest {
 }
 ");
 
-            Container<SymbolInformation> symbols = await PsesLanguageClient
+            Container<WorkspaceSymbol> symbols = await PsesLanguageClient
                 .SendRequest(
                     "workspace/symbol",
                     new WorkspaceSymbolParams
                     {
                         Query = "CanSendWorkspaceSymbolRequest"
                     })
-                .Returning<Container<SymbolInformation>>(CancellationToken.None).ConfigureAwait(true);
+                .Returning<Container<WorkspaceSymbol>>(CancellationToken.None);
 
-            SymbolInformation symbol = Assert.Single(symbols);
+            WorkspaceSymbol symbol = Assert.Single(symbols);
             Assert.Equal("function CanSendWorkspaceSymbolRequest ()", symbol.Name);
         }
 
@@ -142,7 +144,7 @@ function CanSendWorkspaceSymbolRequest {
                 "Windows PowerShell doesn't trust PSScriptAnalyzer by default so it won't load.");
 
             NewTestFile("$a = 4");
-            await WaitForDiagnosticsAsync().ConfigureAwait(true);
+            await WaitForDiagnosticsAsync();
 
             Diagnostic diagnostic = Assert.Single(Diagnostics);
             Assert.Equal("PSUseDeclaredVarsMoreThanAssignments", diagnostic.Code);
@@ -152,7 +154,7 @@ function CanSendWorkspaceSymbolRequest {
         public async Task WontReceiveDiagnosticsFromFileOpenThatIsNotPowerShellAsync()
         {
             NewTestFile("$a = 4", languageId: "plaintext");
-            await Task.Delay(2000).ConfigureAwait(true);
+            await Task.Delay(2000);
 
             Assert.Empty(Diagnostics);
         }
@@ -164,7 +166,7 @@ function CanSendWorkspaceSymbolRequest {
                 "Windows PowerShell doesn't trust PSScriptAnalyzer by default so it won't load.");
 
             string filePath = NewTestFile("$a = 4");
-            await WaitForDiagnosticsAsync().ConfigureAwait(true);
+            await WaitForDiagnosticsAsync();
             Diagnostics.Clear();
 
             PsesLanguageClient.SendNotification("textDocument/didChange", new DidChangeTextDocumentParams
@@ -192,7 +194,7 @@ function CanSendWorkspaceSymbolRequest {
                 }
             });
 
-            await WaitForDiagnosticsAsync().ConfigureAwait(true);
+            await WaitForDiagnosticsAsync();
             if (Diagnostics.Count > 1)
             {
                 StringBuilder errorBuilder = new StringBuilder().AppendLine("Multiple diagnostics found when there should be only 1:");
@@ -234,7 +236,7 @@ function CanSendWorkspaceSymbolRequest {
             string filePath = NewTestFile("$a = 4");
 
             // Wait a bit to make sure no diagnostics came through
-            await Task.Delay(2000).ConfigureAwait(true);
+            await Task.Delay(2000);
             Assert.Empty(Diagnostics);
 
             // Restore default configuration
@@ -261,7 +263,7 @@ function CanSendWorkspaceSymbolRequest {
                 }
             });
 
-            await WaitForDiagnosticsAsync().ConfigureAwait(true);
+            await WaitForDiagnosticsAsync();
 
             Diagnostic diagnostic = Assert.Single(Diagnostics);
             Assert.Equal("PSUseDeclaredVarsMoreThanAssignments", diagnostic.Code);
@@ -289,7 +291,7 @@ $_
                                 Uri = new Uri(scriptPath)
                             }
                         })
-                    .Returning<Container<FoldingRange>>(CancellationToken.None).ConfigureAwait(true);
+                    .Returning<Container<FoldingRange>>(CancellationToken.None);
 
             Assert.Collection(foldingRanges.OrderBy(f => f.StartLine),
                 range1 =>
@@ -336,7 +338,7 @@ Get-Process
                             InsertSpaces = false
                         }
                     })
-                .Returning<TextEditContainer>(CancellationToken.None).ConfigureAwait(true);
+                .Returning<TextEditContainer>(CancellationToken.None);
 
             TextEdit textEdit = Assert.Single(textEdits);
 
@@ -385,7 +387,7 @@ Get-Process
                             InsertSpaces = false
                         }
                     })
-                .Returning<TextEditContainer>(CancellationToken.None).ConfigureAwait(true);
+                .Returning<TextEditContainer>(CancellationToken.None);
 
             TextEdit textEdit = Assert.Single(textEdits);
 
@@ -415,17 +417,27 @@ CanSendDocumentSymbolRequest
                                 Uri = new Uri(scriptPath)
                             }
                         })
-                    .Returning<SymbolInformationOrDocumentSymbolContainer>(CancellationToken.None).ConfigureAwait(true);
+                    .Returning<SymbolInformationOrDocumentSymbolContainer>(CancellationToken.None);
 
             Assert.Collection(symbolInformationOrDocumentSymbols,
                 symInfoOrDocSym =>
                 {
-                    Range range = symInfoOrDocSym.SymbolInformation.Location.Range;
+                    Assert.True(symInfoOrDocSym.IsDocumentSymbol);
+                    Assert.NotNull(symInfoOrDocSym.DocumentSymbol);
+                    DocumentSymbol symbol = symInfoOrDocSym.DocumentSymbol;
 
-                    Assert.Equal(1, range.Start.Line);
-                    Assert.Equal(9, range.Start.Character);
-                    Assert.Equal(3, range.End.Line);
-                    Assert.Equal(1, range.End.Character);
+                    Assert.Equal("function CanSendDocumentSymbolRequest ()", symbol.Name);
+                    Assert.Equal(SymbolKind.Function, symbol.Kind);
+
+                    Assert.Equal(1, symbol.Range.Start.Line);
+                    Assert.Equal(0, symbol.Range.Start.Character);
+                    Assert.Equal(3, symbol.Range.End.Line);
+                    Assert.Equal(1, symbol.Range.End.Character);
+
+                    Assert.Equal(1, symbol.SelectionRange.Start.Line);
+                    Assert.Equal(9, symbol.SelectionRange.Start.Character);
+                    Assert.Equal(1, symbol.SelectionRange.End.Line);
+                    Assert.Equal(37, symbol.SelectionRange.End.Character);
                 });
         }
 
@@ -459,7 +471,7 @@ CanSendReferencesRequest
                             IncludeDeclaration = false
                         }
                     })
-                .Returning<LocationContainer>(CancellationToken.None).ConfigureAwait(true);
+                .Returning<LocationContainer>(CancellationToken.None);
 
             Assert.Collection(locations,
                 location =>
@@ -497,7 +509,7 @@ Write-Host 'Goodbye'
                                 Character = 1
                             }
                         })
-                    .Returning<DocumentHighlightContainer>(CancellationToken.None).ConfigureAwait(true);
+                    .Returning<DocumentHighlightContainer>(CancellationToken.None);
 
             Assert.Collection(documentHighlights.OrderBy(i => i.Range.Start.Line),
                 documentHighlight1 =>
@@ -548,7 +560,7 @@ Write-Host 'Goodbye'
                         .SendRequest(
                             "powerShell/getPSHostProcesses",
                             new GetPSHostProcessesParams())
-                        .Returning<PSHostProcessResponse[]>(CancellationToken.None).ConfigureAwait(true);
+                        .Returning<PSHostProcessResponse[]>(CancellationToken.None);
             }
             finally
             {
@@ -589,9 +601,9 @@ Write-Host 'Goodbye'
                             "powerShell/getRunspace",
                             new GetRunspaceParams
                             {
-                                ProcessId = $"{process.Id}"
+                                ProcessId = process.Id
                             })
-                        .Returning<RunspaceResponse[]>(CancellationToken.None).ConfigureAwait(true);
+                        .Returning<RunspaceResponse[]>(CancellationToken.None);
             }
             finally
             {
@@ -641,7 +653,7 @@ Describe 'DescribeName' {
                             Uri = new Uri(filePath)
                         }
                     })
-                .Returning<CodeLensContainer>(CancellationToken.None).ConfigureAwait(true);
+                .Returning<CodeLensContainer>(CancellationToken.None);
 
             Assert.Collection(codeLenses,
                 codeLens1 =>
@@ -707,7 +719,7 @@ Describe 'DescribeName' {
                             Uri = new Uri(filePath)
                         }
                     })
-                .Returning<CodeLensContainer>(CancellationToken.None).ConfigureAwait(true);
+                .Returning<CodeLensContainer>(CancellationToken.None);
 
             Assert.Collection(codeLenses,
                 codeLens =>
@@ -816,7 +828,7 @@ Describe 'DescribeName' {
                             Uri = new Uri(filePath)
                         }
                     })
-                .Returning<CodeLensContainer>(CancellationToken.None).ConfigureAwait(true);
+                .Returning<CodeLensContainer>(CancellationToken.None);
 
             Assert.Empty(codeLenses);
         }
@@ -842,7 +854,7 @@ CanSendReferencesCodeLensRequest
                             Uri = new Uri(filePath)
                         }
                     })
-                .Returning<CodeLensContainer>(CancellationToken.None).ConfigureAwait(true);
+                .Returning<CodeLensContainer>(CancellationToken.None);
 
             CodeLens codeLens = Assert.Single(codeLenses);
 
@@ -854,7 +866,7 @@ CanSendReferencesCodeLensRequest
 
             CodeLens codeLensResolveResult = await PsesLanguageClient
                 .SendRequest("codeLens/resolve", codeLens)
-                .Returning<CodeLens>(CancellationToken.None).ConfigureAwait(true);
+                .Returning<CodeLens>(CancellationToken.None);
 
             Assert.Equal("1 reference", codeLensResolveResult.Command.Title);
         }
@@ -889,7 +901,7 @@ $o -is [MyBaseClass]
                             Uri = new Uri(filePath)
                         }
                     })
-                .Returning<CodeLensContainer>(CancellationToken.None).ConfigureAwait(true);
+                .Returning<CodeLensContainer>(CancellationToken.None);
 
             Assert.Collection(codeLenses.OrderBy(i => i.Range.Start.Line),
                 codeLens =>
@@ -913,7 +925,7 @@ $o -is [MyBaseClass]
             CodeLens baseClassCodeLens = codeLenses.OrderBy(i => i.Range.Start.Line).First();
             CodeLens codeLensResolveResult = await PsesLanguageClient
                 .SendRequest("codeLens/resolve", baseClassCodeLens)
-                .Returning<CodeLens>(CancellationToken.None).ConfigureAwait(true);
+                .Returning<CodeLens>(CancellationToken.None);
 
             Assert.Equal("4 references", codeLensResolveResult.Command.Title);
         }
@@ -946,7 +958,7 @@ enum MyEnum {
                             Uri = new Uri(filePath)
                         }
                     })
-                .Returning<CodeLensContainer>(CancellationToken.None).ConfigureAwait(true);
+                .Returning<CodeLensContainer>(CancellationToken.None);
 
             CodeLens codeLens = Assert.Single(codeLenses);
 
@@ -958,7 +970,7 @@ enum MyEnum {
 
             CodeLens codeLensResolveResult = await PsesLanguageClient
                 .SendRequest("codeLens/resolve", codeLens)
-                .Returning<CodeLens>(CancellationToken.None).ConfigureAwait(true);
+                .Returning<CodeLens>(CancellationToken.None);
 
             Assert.Equal("3 references", codeLensResolveResult.Command.Title);
         }
@@ -970,7 +982,7 @@ enum MyEnum {
                 "Windows PowerShell doesn't trust PSScriptAnalyzer by default so it won't load.");
 
             string filePath = NewTestFile("gci");
-            await WaitForDiagnosticsAsync().ConfigureAwait(true);
+            await WaitForDiagnosticsAsync();
 
             CommandOrCodeActionContainer commandOrCodeActions =
                 await PsesLanguageClient
@@ -998,7 +1010,7 @@ enum MyEnum {
                                 Diagnostics = new Container<Diagnostic>(Diagnostics)
                             }
                         })
-                    .Returning<CommandOrCodeActionContainer>(CancellationToken.None).ConfigureAwait(true);
+                    .Returning<CommandOrCodeActionContainer>(CancellationToken.None);
 
             Assert.Collection(commandOrCodeActions,
                 command =>
@@ -1023,6 +1035,7 @@ enum MyEnum {
         public async Task CanSendCompletionAndCompletionResolveRequestAsync()
         {
             Skip.If(IsLinux, "This depends on the help system, which is flaky on Linux.");
+            Skip.If(PsesStdioProcess.IsWindowsPowerShell, "This help system isn't updated in CI.");
             string filePath = NewTestFile("Write-H");
 
             CompletionList completionItems = await PsesLanguageClient.TextDocument.RequestCompletion(
@@ -1040,7 +1053,7 @@ enum MyEnum {
 
             CompletionItem updatedCompletionItem = await PsesLanguageClient
                 .SendRequest("completionItem/resolve", completionItem)
-                .Returning<CompletionItem>(CancellationToken.None).ConfigureAwait(true);
+                .Returning<CompletionItem>(CancellationToken.None);
 
             Assert.Contains("Writes customized output to a host", updatedCompletionItem.Documentation.String);
         }
@@ -1049,7 +1062,14 @@ enum MyEnum {
         [SkippableFact]
         public async Task CanRequestCompletionsAndHandleExceptions()
         {
-            Skip.If(PsesStdioProcess.IsWindowsPowerShell, "This is a temporary bug in PowerShell 7, the fix is making its way upstream.");
+            PowerShellVersion details
+                = await PsesLanguageClient
+                    .SendRequest("powerShell/getVersion", new GetVersionParams())
+                    .Returning<PowerShellVersion>(CancellationToken.None);
+
+            Skip.IfNot(details.Version.StartsWith("7.2") || details.Version.StartsWith("7.3"),
+                "This is a bug in PowerShell 7.2 and 7.3, fixed in 7.4");
+
             string filePath = NewTestFile(@"
 @() | ForEach-Object {
     if ($false) {
@@ -1071,8 +1091,9 @@ enum MyEnum {
                 });
 
             Assert.Empty(completionItems);
-            LogMessageParams message = Assert.Single(Messages);
-            Assert.Contains("Exception occurred while running handling completion request", message.Message);
+            Assert.Collection(Messages,
+                (message) => Assert.Contains("Error Occurred in TabExpansion2", message.Message),
+                (message) => Assert.Contains("Exception occurred while running handling completion request", message.Message));
         }
 
         [SkippableFact(Skip = "Completion for Expand-SlowArchive is flaky.")]
@@ -1085,7 +1106,7 @@ enum MyEnum {
                     {
                         Expression = "Import-Module Microsoft.PowerShell.Archive -Prefix Slow"
                     })
-                .ReturningVoid(CancellationToken.None).ConfigureAwait(true);
+                .ReturningVoid(CancellationToken.None);
 
             string filePath = NewTestFile("Expand-SlowArch");
 
@@ -1104,7 +1125,7 @@ enum MyEnum {
 
             CompletionItem updatedCompletionItem = await PsesLanguageClient
                 .SendRequest("completionItem/resolve", completionItem)
-                .Returning<CompletionItem>(CancellationToken.None).ConfigureAwait(true);
+                .Returning<CompletionItem>(CancellationToken.None);
 
             Assert.Contains("Extracts files from a specified archive", updatedCompletionItem.Documentation.String);
         }
@@ -1113,6 +1134,7 @@ enum MyEnum {
         public async Task CanSendHoverRequestAsync()
         {
             Skip.If(IsLinux, "This depends on the help system, which is flaky on Linux.");
+            Skip.If(PsesStdioProcess.IsWindowsPowerShell, "This help system isn't updated in CI.");
             string filePath = NewTestFile("Write-Host");
 
             Hover hover = await PsesLanguageClient.TextDocument.RequestHover(
@@ -1123,7 +1145,7 @@ enum MyEnum {
                         Uri = DocumentUri.FromFileSystemPath(filePath)
                     },
                     Position = new Position(line: 0, character: 1)
-                }).ConfigureAwait(true);
+                });
 
             Assert.True(hover.Contents.HasMarkedStrings);
             Assert.Collection(hover.Contents.MarkedStrings,
@@ -1155,7 +1177,7 @@ enum MyEnum {
                             Character = 10
                         }
                     })
-                .Returning<SignatureHelp>(CancellationToken.None).ConfigureAwait(true);
+                .Returning<SignatureHelp>(CancellationToken.None);
 
             Assert.Contains("Get-Date", signatureHelp.Signatures.First().Label);
         }
@@ -1180,7 +1202,7 @@ CanSendDefinitionRequest
                             TextDocument = new TextDocumentIdentifier { Uri = new Uri(scriptPath) },
                             Position = new Position { Line = 5, Character = 2 }
                         })
-                    .Returning<LocationOrLocationLinks>(CancellationToken.None).ConfigureAwait(true);
+                    .Returning<LocationOrLocationLinks>(CancellationToken.None);
 
             LocationOrLocationLink locationOrLocationLink =
                     Assert.Single(locationOrLocationLinks);
@@ -1205,7 +1227,7 @@ CanSendDefinitionRequest
                         {
                             IncludeInstalledModules = true
                         })
-                    .Returning<GetProjectTemplatesResponse>(CancellationToken.None).ConfigureAwait(true);
+                    .Returning<GetProjectTemplatesResponse>(CancellationToken.None);
 
             Assert.Contains(getProjectTemplatesResponse.Templates, t => t.Title is "AddPSScriptAnalyzerSettings");
             Assert.Contains(getProjectTemplatesResponse.Templates, t => t.Title is "New PowerShell Manifest Module");
@@ -1244,7 +1266,7 @@ function CanSendGetCommentHelpRequest {
                                 Character = 0
                             }
                         })
-                    .Returning<CommentHelpRequestResult>(CancellationToken.None).ConfigureAwait(true);
+                    .Returning<CommentHelpRequestResult>(CancellationToken.None);
 
             Assert.NotEmpty(commentHelpRequestResult.Content);
             Assert.Contains("myParam", commentHelpRequestResult.Content[7]);
@@ -1261,7 +1283,7 @@ function CanSendGetCommentHelpRequest {
                         {
                             Expression = "Get-ChildItem"
                         })
-                    .Returning<EvaluateResponseBody>(CancellationToken.None).ConfigureAwait(true);
+                    .Returning<EvaluateResponseBody>(CancellationToken.None);
 
             // These always gets returned so this test really just makes sure we get _any_ response.
             Assert.Equal("", evaluateResponseBody.Result);
@@ -1274,7 +1296,7 @@ function CanSendGetCommentHelpRequest {
             List<object> pSCommandMessages =
                 await PsesLanguageClient
                     .SendRequest("powerShell/getCommand", new GetCommandParams())
-                    .Returning<List<object>>(CancellationToken.None).ConfigureAwait(true);
+                    .Returning<List<object>>(CancellationToken.None);
 
             Assert.NotEmpty(pSCommandMessages);
             // There should be at least 20 commands or so.
@@ -1295,7 +1317,7 @@ function CanSendGetCommentHelpRequest {
                         {
                             Text = "gci"
                         })
-                    .Returning<ExpandAliasResult>(CancellationToken.None).ConfigureAwait(true);
+                    .Returning<ExpandAliasResult>(CancellationToken.None);
 
             Assert.Equal("Get-ChildItem", expandAliasResult.Text);
         }
@@ -1317,7 +1339,7 @@ function CanSendGetCommentHelpRequest {
                                 Uri = new Uri(scriptPath)
                             }
                         })
-                    .Returning<SemanticTokens>(CancellationToken.None).ConfigureAwait(true);
+                    .Returning<SemanticTokens>(CancellationToken.None);
 
             // More information about how this data is generated can be found at
             // https://github.com/microsoft/vscode-extension-samples/blob/5ae1f7787122812dcc84e37427ca90af5ee09f14/semantic-tokens-sample/vscode.proposed.d.ts#L71
