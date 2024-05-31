@@ -20,33 +20,25 @@ using Xunit;
 namespace PowerShellEditorServices.Test.Extensions
 {
     [Trait("Category", "Extensions")]
-    public class ExtensionCommandTests : IDisposable
+    public class ExtensionCommandTests : IAsyncLifetime
     {
-        private readonly PsesInternalHost psesHost;
+        private PsesInternalHost psesHost;
 
-        private readonly ExtensionCommandService extensionCommandService;
+        private ExtensionCommandService extensionCommandService;
 
-        public ExtensionCommandTests()
+        public async Task InitializeAsync()
         {
-            psesHost = PsesHostFactory.Create(NullLoggerFactory.Instance);
+            psesHost = await PsesHostFactory.Create(NullLoggerFactory.Instance);
             ExtensionService extensionService = new(
                 languageServer: null,
                 serviceProvider: null,
                 editorOperations: null,
                 executionService: psesHost);
-#pragma warning disable VSTHRD002
-            extensionService.InitializeAsync().Wait();
-#pragma warning restore VSTHRD002
+            await extensionService.InitializeAsync();
             extensionCommandService = new(extensionService);
         }
 
-        public void Dispose()
-        {
-#pragma warning disable VSTHRD002
-            psesHost.StopAsync().Wait();
-#pragma warning restore VSTHRD002
-            GC.SuppressFinalize(this);
-        }
+        public async Task DisposeAsync() => await psesHost.StopAsync();
 
         [Fact]
         public async Task CanRegisterAndInvokeCommandWithCmdletName()
