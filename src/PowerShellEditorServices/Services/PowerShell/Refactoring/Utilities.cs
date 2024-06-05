@@ -123,6 +123,19 @@ namespace Microsoft.PowerShell.EditorServices.Refactoring
 
             if (token is NamedBlockAst)
             {
+                // NamedBlockAST starts on the same line as potentially another AST,
+                // its likley a user is not after the NamedBlockAst but what it contains
+                IEnumerable<Ast> stacked_tokens = token.FindAll(ast =>
+                {
+                    return StartLineNumber == ast.Extent.StartLineNumber &&
+                    ast.Extent.EndColumnNumber >= StartColumnNumber
+                    && StartColumnNumber >= ast.Extent.StartColumnNumber;
+                }, true);
+
+                if(stacked_tokens.Count() > 1){
+                    return stacked_tokens.LastOrDefault();
+                }
+
                 return token.Parent;
             }
 
